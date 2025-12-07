@@ -1,5 +1,7 @@
-import sys
 import time
+import sys
+import signal
+import atexit
 
 from mcp.server.fastmcp import FastMCP
 from selenium import webdriver
@@ -12,9 +14,27 @@ from selenium.webdriver.support.ui import WebDriverWait
 # Initialize FastMCP server
 mcp = FastMCP("CodeWiki")
 
+# Global driver registry for cleanup
+_active_drivers = []
+
 def log(message):
     """Helper function to log messages to stderr"""
     print(f"[CodeWiki] {message}", file=sys.stderr, flush=True)
+
+def cleanup_all_drivers():
+    """Cleanup all active Chrome drivers"""
+    log(f"Cleaning up {len(_active_drivers)} active drivers...")
+    for driver in _active_drivers:
+        try:
+            driver.quit()
+        except:
+            pass
+    _active_drivers.clear()
+
+# Register cleanup handlers
+atexit.register(cleanup_all_drivers)
+signal.signal(signal.SIGTERM, lambda s, f: cleanup_all_drivers())
+signal.signal(signal.SIGINT, lambda s, f: cleanup_all_drivers())
 
 @mcp.tool()
 def search_code_wiki(repo_url: str, query: str = "") -> str:
@@ -25,12 +45,40 @@ def search_code_wiki(repo_url: str, query: str = "") -> str:
         repo_url: The full URL of the repository (e.g., https://github.com/microsoft/vscode-copilot-chat)
         query: Question to ask the CodeWiki chat agent (required for meaningful interaction).
     """
+    import threading
+    
     log(f"Starting search_code_wiki - repo: {repo_url}, query: {query}")
     
     if not query:
         log("Error: No query provided")
         return "Error: 'query' parameter is required to ask CodeWiki a question. Example: 'Where are the Allow/Skip buttons implemented?'"
     
+    # Hard timeout - kill after 60 seconds
+    result = [None]
+    exception = [None]
+    
+    def run_with_timeout():
+        try:
+            result[0] = _search_code_wiki_impl(repo_url, query)
+        except Exception as e:
+            exception[0] = e
+    
+    thread = threading.Thread(target=run_with_timeout, daemon=True)
+    thread.start()
+    thread.join(timeout=60)  # 60 second hard timeout
+    
+    if thread.is_alive():
+        log("TIMEOUT: Tool exceeded 60 seconds, forcing cleanup")
+        cleanup_all_drivers()
+        return "Error: Request timed out after 60 seconds. Chrome may have frozen. Please try again."
+    
+    if exception[0]:
+        raise exception[0]
+    
+    return result[0] or "Error: No result returned"
+
+def _search_code_wiki_impl(repo_url: str, query: str) -> str:
+    """Internal implementation of search_code_wiki"""
     # Clean repo URL to match CodeWiki format
     # Format: https://codewiki.google/github.com/owner/repo
     clean_repo = repo_url.replace("https://", "").replace("http://", "")
@@ -58,7 +106,14 @@ def search_code_wiki(repo_url: str, query: str = "") -> str:
         
         log("Initializing Chrome driver...")
         # Initialize driver with faster options
-        driver = webdriver.Chrome(options=chrome_options)
+        try:
+            driver = webdriver.Chrome(options=chrome_options)
+            _active_drivers.append(driver)  # Track for cleanup
+            log("Chrome driver initialized successfully")
+        except Exception as e:
+            log(f"FAILED to initialize Chrome driver: {str(e)}")
+            raise
+        
         driver.set_page_load_timeout(30)  # Set timeout
         
         log(f"Navigating to {target_url}...")
@@ -259,8 +314,18 @@ def search_code_wiki(repo_url: str, query: str = "") -> str:
     finally:
         if driver:
             log("Closing browser...")
-            driver.quit()
-            log("Browser closed")
+            try:
+                driver.quit()
+                if driver in _active_drivers:
+                    _active_drivers.remove(driver)
+                log("Browser closed successfully")
+            except Exception as e:
+                log(f"Error closing browser: {str(e)}")
+                # Force kill if needed
+                try:
+                    driver.service.process.kill()
+                except:
+                    pass
 
 if __name__ == "__main__":
     mcp.run()
