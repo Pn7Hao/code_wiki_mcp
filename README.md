@@ -11,24 +11,27 @@ This is a Model Context Protocol (MCP) server that provides access to Google's C
 
 ## Installation
 
-Dependencies are managed via `pip`. Ensure you have the virtual environment set up:
+Dependencies are managed via `uv` or `pip`. Ensure you have the dependencies installed:
 
 ```bash
-python -m venv venv
-.\venv\Scripts\pip install mcp requests beautifulsoup4
+# Using uv (recommended)
+uv pip install mcp requests beautifulsoup4
+
+# Or using pip
+pip install mcp requests beautifulsoup4
 ```
 
 ## Configuration
 
-To use this server with an MCP client (like Claude Desktop or an IDE), add the following configuration to your MCP settings file:
+To use this server with an MCP client (like Claude Desktop or VS Code), add the following configuration to your MCP settings file (`.vscode/mcp.json`):
 
 ```json
 {
   "mcpServers": {
     "codewiki": {
-      "command": "C:\\Users\\haopn2\\Documents\\code_wiki_mcp\\venv\\Scripts\\python.exe",
+      "command": "python",
       "args": [
-        "C:\\Users\\haopn2\\Documents\\code_wiki_mcp\\server.py"
+        "c:\\Users\\Admin\\Desktop\\Code\\mcp\\code_wiki\\code_wiki_mcp\\server.py"
       ]
     }
   }
