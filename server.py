@@ -1,7 +1,8 @@
-import time
-import sys
-import signal
+import argparse
 import atexit
+import signal
+import sys
+import time
 
 from mcp.server.fastmcp import FastMCP
 from selenium import webdriver
@@ -36,7 +37,6 @@ atexit.register(cleanup_all_drivers)
 signal.signal(signal.SIGTERM, lambda s, f: cleanup_all_drivers())
 signal.signal(signal.SIGINT, lambda s, f: cleanup_all_drivers())
 
-@mcp.tool()
 def search_code_wiki(repo_url: str, query: str = "") -> str:
     """
     Interacts with Google CodeWiki chat interface to ask questions about a repository.
@@ -327,5 +327,52 @@ def _search_code_wiki_impl(repo_url: str, query: str) -> str:
                 except:
                     pass
 
+def _register_tools(server: FastMCP) -> None:
+    """Register available tools on the provided server instance."""
+    server.tool()(search_code_wiki)
+
+
+def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Run the CodeWiki MCP server.")
+    parser.add_argument(
+        "--transport",
+        choices=["stdio", "sse", "streamable-http"],
+        default="stdio",
+        help="Transport protocol to expose (default: stdio).",
+    )
+    parser.add_argument("--host", help="Host to bind when using HTTP transports.")
+    parser.add_argument("--port", type=int, help="Port to bind when using HTTP transports.")
+    parser.add_argument(
+        "--log-level",
+        choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
+        help="Override the FastMCP log level.",
+    )
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> None:
+    """Entrypoint so we can tweak host/port/transport from CLI arguments."""
+    args = _parse_args(argv)
+
+    if args.host:
+        log(f"Setting MCP host to {args.host}")
+        mcp.settings.host = args.host
+    if args.port:
+        log(f"Setting MCP port to {args.port}")
+        mcp.settings.port = args.port
+    if args.log_level:
+        log(f"Setting MCP log level to {args.log_level}")
+        mcp.settings.log_level = args.log_level
+
+    log(
+        f"Starting FastMCP server with {args.transport} transport "
+        f"on {mcp.settings.host}:{mcp.settings.port}"
+    )
+    mcp.run(transport=args.transport)
+
+
+_register_tools(mcp)
+
+
 if __name__ == "__main__":
-    mcp.run()
+    main()
