@@ -1,9 +1,11 @@
-import time
-import sys
-import signal
+import argparse
 import atexit
+import signal
+import sys
+import time
 
 from mcp.server.fastmcp import FastMCP
+from mcp.server.transport_security import TransportSecuritySettings
 from selenium import webdriver
 from selenium.common.exceptions import NoSuchElementException, TimeoutException
 from selenium.webdriver.chrome.options import Options
@@ -36,7 +38,6 @@ atexit.register(cleanup_all_drivers)
 signal.signal(signal.SIGTERM, lambda s, f: cleanup_all_drivers())
 signal.signal(signal.SIGINT, lambda s, f: cleanup_all_drivers())
 
-@mcp.tool()
 def search_code_wiki(repo_url: str, query: str = "") -> str:
     """
     Interacts with Google CodeWiki chat interface to ask questions about a repository.
@@ -327,5 +328,106 @@ def _search_code_wiki_impl(repo_url: str, query: str) -> str:
                 except:
                     pass
 
+def _register_tools(server: FastMCP) -> None:
+    """Register available tools on the provided server instance."""
+    server.tool()(search_code_wiki)
+
+
+def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Run the CodeWiki MCP server.")
+    parser.add_argument(
+        "--transport",
+        choices=["stdio", "sse", "streamable-http"],
+        default="stdio",
+        help="Transport protocol to expose (default: stdio).",
+    )
+    parser.add_argument("--host", help="Host to bind when using HTTP transports.")
+    parser.add_argument("--port", type=int, help="Port to bind when using HTTP transports.")
+    parser.add_argument(
+        "--log-level",
+        choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
+        help="Override the FastMCP log level.",
+    )
+    parser.add_argument(
+        "--allow-host",
+        action="append",
+        default=[],
+        help=(
+            "Allow additional Host headers (use hostname or hostname:port). "
+            "Needed when exposing the server through HTTPS/reverse proxies."
+        ),
+    )
+    parser.add_argument(
+        "--allow-origin",
+        action="append",
+        default=[],
+        help=(
+            "Allow additional Origin headers (e.g. https://my-domain). "
+            "Include scheme so HTTPS origins pass DNS rebinding checks."
+        ),
+    )
+    parser.add_argument(
+        "--disable-dns-rebinding",
+        action="store_true",
+        help="Disable DNS rebinding protection. Only use this when you fully trust the network/proxy in front.",
+    )
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> None:
+    """Entrypoint so we can tweak host/port/transport from CLI arguments."""
+    args = _parse_args(argv)
+
+    if args.host:
+        log(f"Setting MCP host to {args.host}")
+        mcp.settings.host = args.host
+    if args.port:
+        log(f"Setting MCP port to {args.port}")
+        mcp.settings.port = args.port
+    if args.log_level:
+        log(f"Setting MCP log level to {args.log_level}")
+        mcp.settings.log_level = args.log_level
+
+    # Configure DNS rebinding/HTTPS proxy allowances
+    if args.disable_dns_rebinding:
+        log("Disabling DNS rebinding protection (trusted HTTPS proxy/tunnel assumed)")
+        mcp.settings.transport_security = TransportSecuritySettings(enable_dns_rebinding_protection=False)
+    elif args.allow_host or args.allow_origin:
+        existing_security = mcp.settings.transport_security
+        allowed_hosts = list(existing_security.allowed_hosts) if existing_security else []
+        allowed_origins = list(existing_security.allowed_origins) if existing_security else []
+
+        for host in args.allow_host:
+            if host not in allowed_hosts:
+                allowed_hosts.append(host)
+        for origin in args.allow_origin:
+            if origin not in allowed_origins:
+                allowed_origins.append(origin)
+
+        # If FastMCP was initialized with loopback defaults and we are adding extra hosts,
+        # keep the original ones unless explicitly overridden.
+        if not existing_security:
+            allowed_hosts.extend(["127.0.0.1:*", "localhost:*", "[::1]:*"])
+            allowed_origins.extend(["http://127.0.0.1:*", "http://localhost:*", "http://[::1]:*"])
+
+        mcp.settings.transport_security = TransportSecuritySettings(
+            enable_dns_rebinding_protection=True,
+            allowed_hosts=allowed_hosts,
+            allowed_origins=allowed_origins,
+        )
+
+        log(f"Allowed Host headers: {allowed_hosts}")
+        log(f"Allowed Origin headers: {allowed_origins}")
+
+    log(
+        f"Starting FastMCP server with {args.transport} transport "
+        f"on {mcp.settings.host}:{mcp.settings.port}"
+    )
+    mcp.run(transport=args.transport)
+
+
+_register_tools(mcp)
+
+
 if __name__ == "__main__":
-    mcp.run()
+    main()
